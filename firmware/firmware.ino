@@ -84,6 +84,15 @@ static void stepAll() {
     digitalWrite(BL_STEP, LOW);  digitalWrite(BR_STEP, LOW);
 }
 
+static void stepperEnable(bool on) {
+    // DRV8825 EN is active-LOW: LOW = enabled, HIGH = disabled (coils de-energised).
+    const uint8_t level = on ? LOW : HIGH;
+    digitalWrite(FL_EN, level);
+    digitalWrite(FR_EN, level);
+    digitalWrite(BR_EN, level);
+    digitalWrite(BL_EN, level);
+}
+
 static void pumpOff() {
     digitalWrite(PUMP_IN1, LOW);
     digitalWrite(PUMP_IN2, LOW);
@@ -99,10 +108,17 @@ static void servoSet(uint8_t pos) {
 
 static void dispatch(const char* cmd) {
 
+    // READ_TEMP ───────────────────────────────────────────────────────────────
+    if (strcmp(cmd, "READ_TEMP") == 0) {
+        Serial.println(F("TMP:70.2,43.3"));  // placeholder — real sensor TBD
+        return;
+    }
+
     // STOP ────────────────────────────────────────────────────────────────────
     if (strcmp(cmd, "STOP") == 0) {
         g_stepsLeft  = 0L;
         g_moveActive = false;
+        stepperEnable(false);
         pumpOff();
         g_pumpActive = false;
         Serial.println(F("ACK:STOP"));
@@ -130,6 +146,7 @@ static void dispatch(const char* cmd) {
         bool fwd     = (strcmp(dir, "FORWARD") == 0);
         g_stepsLeft  = fwd ? (long)steps : -(long)steps;
         g_moveActive = true;
+        stepperEnable(true);
         g_lastStepUs = micros();
         strncpy(g_moveDir, dir, sizeof(g_moveDir) - 1);
         stepperDir(fwd);
@@ -213,7 +230,7 @@ void setup() {
         pinMode(stepPins[i], OUTPUT);
         pinMode(dirPins[i],  OUTPUT);
         pinMode(enPins[i],   OUTPUT);
-        digitalWrite(enPins[i], LOW);  // LOW = enabled on DRV8825
+        digitalWrite(enPins[i], HIGH); // HIGH = disabled on DRV8825 (enables on demand)
     }
 
     // Servo — Timer1 Fast PWM Mode 14 (ICR1 as TOP) at 50 Hz on pin 11 (OC1A)
@@ -249,7 +266,8 @@ void loop() {
             else                  ++g_stepsLeft;
         }
     } else if (g_moveActive) {
-        // Steps just finished — emit FINISH once.
+        // Steps just finished — disable drivers then emit FINISH once.
+        stepperEnable(false);
         char msg[40];
         snprintf(msg, sizeof(msg), "ACK:MOVE:%s:FINISH", g_moveDir);
         Serial.println(msg);
