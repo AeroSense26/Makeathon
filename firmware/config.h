@@ -107,12 +107,12 @@ static constexpr uint8_t IR_TAPE_LEVEL = LOW;
 static constexpr uint8_t SERVO_PIN             = 11U;
 
 /**
- * Physical angle range of the servo mapped to the 0–100 API range.
- * Adjust SERVO_ANGLE_MIN / MAX after physical calibration to match the
- * actual sweep of the nozzle over the camera frame.
+ * Servo pulse-width range in microseconds, mapped to the 0–100 API range.
+ * Standard servo: 1 000 µs = full left (position 0), 2 000 µs = full right (position 100).
+ * Adjust after physical calibration to match the actual nozzle sweep.
  */
-static constexpr uint8_t SERVO_ANGLE_MIN       = 0U;    // corresponds to position  0
-static constexpr uint8_t SERVO_ANGLE_MAX       = 180U;  // corresponds to position 100
+static constexpr uint16_t SERVO_PULSE_MIN_US   = 1000U; // corresponds to position   0
+static constexpr uint16_t SERVO_PULSE_MAX_US   = 2000U; // corresponds to position 100
 
 /** Servo rests here at power-on (0 = full left of frame). */
 static constexpr uint8_t SERVO_HOME_POSITION   = 0U;

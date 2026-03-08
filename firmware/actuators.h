@@ -29,7 +29,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include <Servo.h>      // Bundled with Arduino IDE — no install required.
 
 #include "config.h"
 #include "sensors.h"   // Brings in IRSensorPair.
@@ -397,16 +396,37 @@ private:
 // ServoController
 // ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief MG996R servo controller using Timer1 hardware PWM — no Servo.h needed.
+ *
+ * Pin 11 on the Arduino Mega maps to OC1A (Timer1, Channel A, 16-bit).
+ * Timer1 is configured for Fast PWM Mode 14 (ICR1 as TOP) at 50 Hz:
+ *
+ *   Prescaler = 8  →  1 timer tick = 0.5 µs
+ *   ICR1 = 39 999  →  period = 40 000 × 0.5 µs = 20 ms  (50 Hz)
+ *
+ * Pulse width is set by writing OCR1A (counts = microseconds × 2).
+ * The calibration range is defined in config.h as SERVO_PULSE_MIN/MAX_US.
+ */
 class ServoController {
 public:
     // ── Lifecycle ────────────────────────────────────────────────────────────
 
     /**
-     * @brief Attach the servo and drive it to the home position.
+     * @brief Configure Timer1 for 50 Hz PWM on SERVO_PIN and go to home.
      * Call once from setup().
      */
     void begin() {
-        _servo.attach(SERVO_PIN);
+        pinMode(SERVO_PIN, OUTPUT);
+
+        // ── Timer1 Fast PWM Mode 14, ICR1 as TOP ─────────────────────────────
+        // WGM13:0 = 1110  →  Fast PWM, TOP = ICR1
+        // COM1A1:0 = 10   →  Non-inverting output on OC1A (pin 11)
+        // CS11            →  Prescaler /8  (1 tick = 0.5 µs at 16 MHz)
+        TCCR1A = _BV(COM1A1) | _BV(WGM11);
+        TCCR1B = _BV(WGM13)  | _BV(WGM12) | _BV(CS11);
+        ICR1   = 39999U;  // TOP: 40 000 ticks × 0.5 µs = 20 ms period
+
         setPosition(SERVO_HOME_POSITION);
         Serial.println(F("SERVO:READY"));
     }
@@ -416,8 +436,8 @@ public:
     /**
      * @brief Move the servo to a position in the 0–100 API range.
      *
-     * Linearly maps to [SERVO_ANGLE_MIN, SERVO_ANGLE_MAX].  Adjust those
-     * constants in config.h after physical calibration.
+     * Maps 0–100 linearly to [SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US], then
+     * converts to Timer1 counts (2 counts per microsecond).
      *
      * @param position  0 = full left of frame, 100 = full right of frame.
      */
@@ -425,17 +445,17 @@ public:
         position      = constrain(position, 0U, 100U);
         _lastPosition = position;
 
-        const uint8_t angle = static_cast<uint8_t>(
-            map(position, 0, 100, SERVO_ANGLE_MIN, SERVO_ANGLE_MAX)
+        const uint16_t pulseUs = static_cast<uint16_t>(
+            map(position, 0, 100, SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US)
         );
-        _servo.write(angle);
+        // 1 µs = 2 timer counts (prescaler /8 at 16 MHz → 0.5 µs/tick)
+        OCR1A = static_cast<uint16_t>(pulseUs * 2U);
     }
 
     /** @brief Last commanded position (0–100). */
     uint8_t getPosition() const { return _lastPosition; }
 
 private:
-    Servo   _servo;
     uint8_t _lastPosition = SERVO_HOME_POSITION;
 };
 
