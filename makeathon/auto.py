@@ -1,33 +1,43 @@
 """
-Autonomous stem-finding and centering loop.
+Autonomous fertilization loop.
 
-Behaviour
----------
-1.  Take a photo.
-2.  Run stem detection.
-3.  No stems found  →  drive FORWARD 8 000 steps and repeat from step 1.
-4.  Stems found     →  compute the confidence-weighted average Y position.
-        • The camera faces forward; a stem in the *upper* half of the frame
-          is farther away  →  drive FORWARD 100 steps to close the distance.
-        • A stem in the *lower* half is very close / already under the rover
-          →  drive BACKWARD 100 steps.
-        • Within ±20 % of the vertical centre  →  aligned, stop.
+Camera orientation
+------------------
+The camera is mounted on the LEFT side of the rover, facing LEFT.
+As the rover moves FORWARD, plants travel RIGHT → LEFT across the image
+(decreasing X).  Centering is therefore done on the horizontal (X) axis:
 
-The loop runs until the stem is centred or an error/Ctrl-C occurs.
+    Plant right of centre  →  rover hasn't reached it yet  →  FORWARD
+    Plant left of centre   →  rover has passed it          →  BACKWARD
+    Within ±20 % of centre →  aligned, proceed to fertilize
+
+Full cycle (repeats until STOP / Ctrl-C)
+-----------------------------------------
+1.  Move FORWARD 8 000 steps and take a photo.
+2.  Detect stems.  If none found, repeat step 1.
+3.  Fine-adjust in 100-step increments until stem is X-centred.
+4.  Move servo to position 50 (nozzle down).
+5.  Pump FORWARD 25 s  (placeholder — will be XGBRegressor output).
+6.  Pump BACKWARD 20 s (retract).
+7.  Move servo to position 100 (nozzle up / home).
+8.  Go to step 1 (search for the next plant).
 """
 
 from makeathon.hardware.arduino import ArduinoConnection, ArduinoError
 from makeathon.hardware.camera import Camera, CameraError
 from makeathon.ml.models import StemDetector, ModelError
 
-SEARCH_STEPS    = 8000   # steps to advance when no stem is visible
-CENTER_STEPS    = 100    # steps per fine-adjustment iteration
-TOLERANCE       = 0.20   # accept when avg_y is within ±20 % of image centre
+SEARCH_STEPS      = 8000   # steps forward when no stem visible
+CENTER_STEPS      = 100    # steps per fine-adjustment iteration
+TOLERANCE         = 0.20   # ±20 % of image centre counts as aligned
+
+DISPENSE_SECONDS  = 25     # placeholder — replace with XGBRegressor output
+RETRACT_SECONDS   = 20     # pump reverse to clear the line
 
 
-def _weighted_avg_y(detections: list) -> float:
+def _weighted_avg_x(detections: list) -> float:
     total_conf = sum(d["confidence"] for d in detections)
-    return sum(d["y"] * d["confidence"] for d in detections) / total_conf
+    return sum(d["x"] * d["confidence"] for d in detections) / total_conf
 
 
 def _send(arduino: ArduinoConnection, cmd: str) -> None:
@@ -36,69 +46,130 @@ def _send(arduino: ArduinoConnection, cmd: str) -> None:
         print(f"  {line}")
 
 
-def run(arduino: ArduinoConnection, camera: Camera) -> None:
-    """
-    Entry point called by the CLI when the user types START.
-    Blocks until the stem is centred, an error occurs, or Ctrl-C is pressed.
-    """
-    detector = StemDetector()
-    print("Auto mode started. Press Ctrl-C to abort.\n")
+def _search_forward(arduino: ArduinoConnection) -> None:
+    print(f"No stems detected. Moving forward {SEARCH_STEPS} steps...")
+    _send(arduino, f"MOVE:FORWARD:{SEARCH_STEPS}")
 
+
+def _center_stem(arduino: ArduinoConnection, camera: Camera, detector: StemDetector) -> bool:
+    """
+    Take photos and nudge forward/backward until the stem is X-centred.
+
+    Returns True when centred, False on any error.
+    """
     while True:
-        # ── 1. Capture ────────────────────────────────────────────────────────
         try:
             path = camera.take_photo()
-            print(f"Photo saved: {path.name}")
+            print(f"Photo: {path.name}")
         except CameraError as exc:
             print(f"Camera error: {exc}")
-            return
+            return False
 
-        # ── 2. Detect ─────────────────────────────────────────────────────────
         try:
             result = detector.predict(str(path))
         except ModelError as exc:
             print(f"Model error: {exc}")
-            return
+            return False
 
-        detections   = result["detections"]
-        image_height = result["image_height"]
-        center_y     = image_height / 2.0
+        detections  = result["detections"]
+        image_width = result["image_width"]
+        center_x    = image_width / 2.0
 
-        # ── 3. No stems → search forward ──────────────────────────────────────
         if not detections:
-            print(f"No stems detected. Moving forward {SEARCH_STEPS} steps...")
-            try:
-                _send(arduino, f"MOVE:FORWARD:{SEARCH_STEPS}")
-            except ArduinoError as exc:
-                print(f"Arduino error: {exc}")
-                return
-            continue
+            # Stem disappeared — go back to search
+            print("Stem lost during centering. Resuming search...")
+            return False
 
-        # ── 4. Stems found → fine-centre on Y axis ────────────────────────────
-        avg_y     = _weighted_avg_y(detections)
-        deviation = (avg_y - center_y) / center_y   # negative = above, positive = below
+        avg_x     = _weighted_avg_x(detections)
+        deviation = (avg_x - center_x) / center_x   # +ve = right of centre, -ve = left
 
         print(
             f"Stems: {len(detections)}  |  "
-            f"avg_y={avg_y:.1f}  centre={center_y:.1f}  "
+            f"avg_x={avg_x:.1f}  centre={center_x:.1f}  "
             f"deviation={deviation*100:+.1f}%"
         )
 
         if abs(deviation) <= TOLERANCE:
-            print("\nStem centred. Ready to fertilize.")
-            return
+            print("Stem centred.")
+            return True
 
-        if avg_y < center_y:
-            # Stem above centre → still ahead of rover → move forward
-            print(f"Stem above centre. Moving forward {CENTER_STEPS} steps...")
+        if avg_x > center_x:
+            # Plant still to the right — rover hasn't reached it yet
+            print(f"Stem right of centre. Moving forward {CENTER_STEPS} steps...")
             direction = "FORWARD"
         else:
-            # Stem below centre → rover has passed it → move backward
-            print(f"Stem below centre. Moving backward {CENTER_STEPS} steps...")
+            # Plant slid past centre to the left — back up
+            print(f"Stem left of centre. Moving backward {CENTER_STEPS} steps...")
             direction = "BACKWARD"
 
         try:
             _send(arduino, f"MOVE:{direction}:{CENTER_STEPS:04d}")
         except ArduinoError as exc:
             print(f"Arduino error: {exc}")
+            return False
+
+
+def _fertilize(arduino: ArduinoConnection) -> None:
+    """Deploy nozzle, dispense, retract, stow nozzle."""
+    print("Deploying nozzle (servo → 50)...")
+    _send(arduino, "SERVO:050")
+
+    print(f"Dispensing water ({DISPENSE_SECONDS}s)...")
+    _send(arduino, f"PUMP:FORWARD:{DISPENSE_SECONDS:02d}")
+
+    print(f"Retracting ({RETRACT_SECONDS}s)...")
+    _send(arduino, f"PUMP:BACKWARD:{RETRACT_SECONDS:02d}")
+
+    print("Stowing nozzle (servo → 100)...")
+    _send(arduino, "SERVO:100")
+
+
+def run(arduino: ArduinoConnection, camera: Camera) -> None:
+    """
+    Entry point called by the CLI on START.
+    Runs the full search → centre → fertilize cycle indefinitely
+    until an error occurs or the user presses Ctrl-C / sends STOP.
+    """
+    detector = StemDetector()
+    print("Auto mode started. Press Ctrl-C to abort.\n")
+
+    while True:
+        # ── Step 1: advance and capture ───────────────────────────────────────
+        try:
+            _search_forward(arduino)
+        except ArduinoError as exc:
+            print(f"Arduino error: {exc}")
             return
+
+        try:
+            path = camera.take_photo()
+            print(f"Photo: {path.name}")
+        except CameraError as exc:
+            print(f"Camera error: {exc}")
+            return
+
+        # ── Step 2: detect ────────────────────────────────────────────────────
+        try:
+            result = detector.predict(str(path))
+        except ModelError as exc:
+            print(f"Model error: {exc}")
+            return
+
+        if not result["detections"]:
+            continue   # nothing visible — loop back and advance again
+
+        print(f"Stem(s) detected ({len(result['detections'])}).")
+
+        # ── Step 3: centre ────────────────────────────────────────────────────
+        centred = _center_stem(arduino, camera, detector)
+        if not centred:
+            continue   # lost the stem — go back to search
+
+        # ── Steps 4-7: fertilize ──────────────────────────────────────────────
+        try:
+            _fertilize(arduino)
+        except ArduinoError as exc:
+            print(f"Arduino error during fertilization: {exc}")
+            return
+
+        print("Plant fertilized. Searching for next plant...\n")
