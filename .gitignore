@@ -15,3 +15,6 @@ data/*
 # Arduino IDE build output
 firmware/build/
 firmware/.arduino15/
+
+# Trained model cache (regenerated automatically on first run)
+*.pkl

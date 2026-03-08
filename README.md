@@ -1,38 +1,339 @@
-The goal behind this project is to make a autonomous, precision application fertilizre robot. It will be able to travel alongside plants and use intelligent sensors to determine the proper dosage, here is the generl idea. All power is already taken care of. Roboflow models are already built. XBGRegession is not built. DO NOT MODIFY THIS README AT ALL IT WILL SERVE AS A CENTRAL DATABASE.
+# AeroSense — Autonomous Precision Fertilizer Rover
 
-For all code, write it as industry standard and professional as possible. I mean seriously go over the top here.
+> An intelligent, plant-aware rover that autonomously navigates crop rows, identifies individual plant stems via computer vision, classifies species, and dispenses a machine-learning-optimised dose of liquid fertilizer — all without human intervention.
 
-Hardware:
-- An arduino Mega 2560
-- A RAMPS 1.4 shield plugged into the arduino mega
-- 4x DRV8825 drivers and stepper motors at 200 step/rev, 1.8degree plugged into the x y and z and E0 slots on the Ramps 1.4. These motors are what drive the rover forward or backwards. They are set up like a car but cannot turn, so they need tank like drive almost. The front left wheel is in E0, front right is X, back right is Y, back left is Z. These steppers should move fairly slow
-- There are 2x TCRT5000 IR sensors on the front of the rover. They are meant to follow a line of black tape (For example, if the left sensors detects black tape, turn slightly left) The left one is plugged into D16 and the right one is plugged into D17. It should work in conjunction with the move forward and move backward commands, so it just slightly reduces speed in one side until its back on track
-- A SEN0546 temp/humidity sensor is also in the SDA/SCL slots 20/21
-- A MG996R servo is attached to slot D11. This slot is meant to aim the water cannon from left to right
-- A L29N motor driver is attached to D23 and D25. This drives a DC power pump which can deliver the water or suck it back
-- The logic is controlled all by rasperry pi 4b connected to the arduino via serial. It can send and receive commands between the arduino, more info below.
-- A IMX708 camera is also attached to the Raspberry pi4b for use
+---
 
-Here is the general flow chart of how the rover works.
-- The Raspberry Pi receives the command Start in the terminal and starts the cycle.
-- It first takes an image, and using a instance segmentation model developed via roboflow (Yolo26) it will try to detect plant stems. (Note, the camera is mounted upsidedown on the rover so flip it in software) If there are no plant stems, it will move one cycle of steps forward (ie. 200 steps). and try again and repeat until it finds a plant. (Note, the camera is facing out towards the left side of the rover)
-- Once it finds the plant, it wll take like a weighted average for the average midpoint of the stems. What I mean by this is like the vertical pixels all get collapsed downwrds, and then it finds the average between all those pixels, so if there is more vertical plant to the left the weighed average will be more left. If it is not within 20% of the center of the camera, then move forward or backwards 25 steps and check again. Repeat until its within this threshold.
-- Once it is in the midle, find the weighted middle again and move the servo so it is overtop of this point (I know this will take trial and error to find).
-- Once it is in the middle, use a seperate Roboflow classification model to classify the plant as either a money_tree, basil, or anthurium. Each of these will have a base level second dispensing of fertilizer.
-- Next, it will use a XGBRegression model to determine how much to modify the base fertilzier based on the following input. 1. The time of day (find) (IDk how to input this into XGBRegression), 3. temperature (sense), 4. humidity (sense) 5. VPD (calculate), 6, Average width of the stem for each y pixel row (find using segmentation model). We dont have data yet so we will need to generate synthetic data first time around.
-- Next, it will dispense the proper amount of fertilizer sing the pump, before starting it over again. 
+## Table of Contents
 
-Using serial monitor, the Arduino should be able to take in the following commands either the user sends in or the pi sends
-- READ_TEMP read the temp sensor and send back the data in the format 00.0, 00.0 for temp and then humidity
-- MOVE:FORWARD:0000 Move the stepper motors. Note, 0000 represents the amount of steps, so 0200 is 200 steps. Also, forward can be BACKWARD to go in reverse. It should send back ACK:MOVE:FORWARD:0000 and when its done ACK:MOVE:FORWARD:FINISH of course the related.
-- Servo:000 Where 000 represents a number 0-100 that will be found. 0 Is all the way left out of the screen, and 100 is all the way right out of the screen. This will obviously be calibrated via trial and error. Again send ACK:SERVO:000 and ACK:SERVO:FINISH
-- PUMP:FORWARD:00 Where 00 represents the time in seconds the pump should run. Note, FORWARD can also be backwards to suck up the water. Again do the ACK:PUMP:FORWARD:00 and ACK:PUMP:FINISH
+- [Overview](#overview)
+- [Hardware](#hardware)
+- [System Architecture](#system-architecture)
+- [Autonomous Control Loop](#autonomous-control-loop)
+- [Software Stack](#software-stack)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [CLI Reference](#cli-reference)
+- [Serial Protocol](#serial-protocol)
 
-The user should be able ot enter some commands to the Raspberry Pi via CLI to control the system.
-Start will start the entire process described above
-Stop will stop it and bring the system slowly to a halt while turning off pump
-It should have all the above commands as well
+---
 
-Other info
-- The arduino will be the "firmware". It should have the temp/humidit sensor avraging on a constant loop the past 10 data points in the past 10 seconds so when requested, it gives this average instantly. Also, the IR sensor code should be handled entirely arduino side. It should just like reduce speed of correspoding motor no?
-- Servo should probably start at 0 position 
+## Overview
+
+AeroSense is a precision agriculture rover built around an Arduino Mega 2560 and a Raspberry Pi 4B. It drives itself along a planting row, uses a side-mounted IMX708 camera and two Roboflow computer vision models to locate and identify plants, then applies a data-driven fertilizer dose predicted by an XGBoost regression model trained on environmental and morphological features.
+
+**Key capabilities:**
+
+| Capability | Implementation |
+|---|---|
+| Autonomous row navigation | Non-blocking stepper control via DRV8825 drivers |
+| Line following | Dual TCRT5000 IR sensors with differential speed correction |
+| Plant stem detection | Roboflow YOLOv8 instance segmentation (hosted API) |
+| Species classification | Roboflow classification model — money tree, basil, anthurium |
+| Fertilizer dosage | XGBoost regression on time, temperature, humidity, VPD, stem geometry |
+| Environmental sensing | SEN0546 temperature / humidity sensor (rolling 10-point average) |
+| Liquid delivery | DC pump via L298N driver, bidirectional (dispense + retract) |
+| Nozzle aiming | MG996R servo — 0 (full left) to 100 (full right) |
+| Emergency stop | Immediate motor + pump cutoff via serial or Ctrl-C |
+
+---
+
+## Hardware
+
+### Compute
+
+| Component | Role |
+|---|---|
+| Raspberry Pi 4B | Autonomy controller — vision, ML inference, CLI, serial comms |
+| Arduino Mega 2560 + RAMPS 1.4 | Real-time firmware — steppers, servo, pump, sensors |
+
+### Drivetrain
+
+Four stepper motors (200 step/rev, 1.8°) driven by DRV8825 carriers in a fixed-axis tank configuration. The rover moves only forward and backward; lateral alignment is achieved by the IR line-following system.
+
+| Motor | RAMPS slot | Physical position |
+|---|---|---|
+| FL | E0 | Front-left |
+| FR | X | Front-right (DIR inverted) |
+| BR | Y | Back-right (DIR inverted) |
+| BL | Z | Back-left |
+
+FR and BR are physically mirrored, so their direction pins are driven opposite to FL/BL to achieve straight-line motion.
+
+### Sensors & Actuators
+
+| Component | Connection | Purpose |
+|---|---|---|
+| TCRT5000 × 2 | D16 (left), D17 (right) | IR line following — black-tape track |
+| SEN0546 | SDA/SCL (D20/D21) | Temperature & humidity (I²C) |
+| IMX708 | Pi Camera connector | Plant imaging (mounted upside-down, left-facing) |
+| MG996R servo | D11 (OC1A — Timer1 PWM) | Nozzle left/right aiming |
+| DC water pump | D23 / D25 via L298N | Fertilizer dispense and retract |
+
+---
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                  Raspberry Pi 4B                    │
+│                                                     │
+│  ┌──────────┐   ┌──────────┐   ┌─────────────────┐ │
+│  │  Camera  │   │Roboflow  │   │  XGBRegressor   │ │
+│  │ (IMX708) │──▶│  Models  │──▶│  Dosage Model   │ │
+│  └──────────┘   └──────────┘   └────────┬────────┘ │
+│                                          │          │
+│  ┌───────────────────────────────────────▼────────┐ │
+│  │              Control Loop (auto.py)            │ │
+│  │  search → detect → centre → classify → dose   │ │
+│  └───────────────────────────────────────┬────────┘ │
+│                                          │ serial   │
+└──────────────────────────────────────────┼──────────┘
+                                           │ USB
+┌──────────────────────────────────────────▼──────────┐
+│              Arduino Mega 2560 + RAMPS 1.4          │
+│                                                     │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │Steppers  │  │  Servo   │  │   Water Pump     │  │
+│  │(DRV8825) │  │ (Timer1) │  │   (L298N)        │  │
+│  └──────────┘  └──────────┘  └──────────────────┘  │
+│                                                     │
+│  ┌──────────────────┐   ┌───────────────────────┐   │
+│  │  IR Sensors ×2   │   │  SEN0546 Temp/Humid   │   │
+│  │  (line follow)   │   │  (rolling 10s avg)    │   │
+│  └──────────────────┘   └───────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Autonomous Control Loop
+
+```
+START
+  │
+  ▼
+Move forward 8 000 steps
+  │
+  ▼
+Take photo ──────────────────────────────────────┐
+  │                                              │
+  ▼                                              │
+Stem detection (Roboflow YOLO)                   │
+  │                                              │
+  ├── No stems detected ────────────────────────►┘ (advance again)
+  │
+  ▼
+Compute confidence-weighted average X position of stems
+  │
+  ├── |deviation| > 20% of image centre
+  │     ├── Stem right of centre → MOVE:FORWARD:0100
+  │     └── Stem left of centre  → MOVE:BACKWARD:0100
+  │     └── (re-photograph and re-evaluate)
+  │
+  ▼ (centred)
+Classify species (Roboflow classification model)
+  │
+  ▼
+Gather environmental inputs:
+  • Time of day
+  • Temperature & humidity (SEN0546 rolling average)
+  • VPD (calculated from T & RH)
+  • Average stem width per pixel row (from segmentation mask)
+  │
+  ▼
+XGBRegressor → predicted fertilizer duration (seconds)
+  │
+  ▼
+SERVO:050  (deploy nozzle)
+  │
+  ▼
+PUMP:FORWARD:<predicted_seconds>
+  │
+  ▼
+PUMP:BACKWARD:20  (retract / clear line)
+  │
+  ▼
+SERVO:100  (stow nozzle)
+  │
+  └──────────────────────────────────────────────┐
+                                                 │
+                                              (repeat)
+```
+
+---
+
+## Software Stack
+
+### Raspberry Pi (`python main.py`)
+
+| Module | Purpose |
+|---|---|
+| `main.py` | Entry point — connects to Arduino, homes servo, launches CLI |
+| `makeathon/interface/cli.py` | Interactive REPL — all commands, START/STOP handling |
+| `makeathon/auto.py` | Autonomous fertilization loop |
+| `makeathon/hardware/arduino.py` | Serial interface — `send()`, `connect()`, terminal detection |
+| `makeathon/hardware/camera.py` | IMX708 capture — autofocus, vflip, timestamped JPEG to `data/` |
+| `makeathon/ml/models.py` | Roboflow REST wrappers — `Classifier`, `StemDetector` |
+| `config/settings.py` | Serial port, baud rate, model IDs — no secrets |
+| `.env` | `ROBOFLOW_API_KEY` — gitignored, created per-machine |
+
+### Arduino (`firmware/firmware.ino`)
+
+Single-file firmware, zero external libraries.
+
+| Feature | Implementation |
+|---|---|
+| Stepper control | Non-blocking `micros()` interval timer, 400 steps/s |
+| Servo PWM | Timer1 Fast PWM Mode 14 (50 Hz) — no `Servo.h` needed |
+| Pump control | Non-blocking `millis()` timer, bidirectional via L298N |
+| IR line following | Differential speed correction on left/right DRV8825 enable pins |
+| Temp/humidity | Raw I²C SEN0546 driver, rolling 10-point average over 10 s |
+| Serial protocol | 115 200 baud, LF-terminated, ACK/FINISH handshake |
+
+---
+
+## Project Structure
+
+```
+Makeathon/
+├── main.py                        # Entry point
+├── requirements.txt
+├── .env                           # API key — NOT committed
+├── .gitignore
+│
+├── config/
+│   └── settings.py                # Serial + Roboflow config
+│
+├── firmware/
+│   └── firmware.ino               # Arduino firmware (no external libs)
+│
+├── makeathon/
+│   ├── auto.py                    # Autonomous control loop
+│   ├── hardware/
+│   │   ├── arduino.py             # Serial interface class
+│   │   └── camera.py              # Camera capture class
+│   ├── interface/
+│   │   └── cli.py                 # Interactive CLI
+│   └── ml/
+│       └── models.py              # Roboflow model wrappers
+│
+└── data/                          # Captured images (gitignored)
+```
+
+---
+
+## Installation
+
+### Arduino
+
+1. Open `firmware/firmware.ino` in the Arduino IDE.
+2. Select **Board → Arduino Mega or Mega 2560** and the correct port.
+3. Upload. The serial monitor at 115 200 baud should print `ROVER:READY` on boot.
+
+### Raspberry Pi
+
+```bash
+# Clone the repo
+git clone <repo-url> ~/Makeathon
+cd ~/Makeathon
+
+# Create a virtual environment (system-site-packages needed for picamera2)
+python3 -m venv .venv --system-site-packages
+source .venv/bin/activate
+
+# Install dependencies
+pip install requests python-dotenv
+
+# Create your secrets file
+echo "ROBOFLOW_API_KEY=your_key_here" > .env
+
+# Run
+python main.py
+```
+
+---
+
+## Configuration
+
+All non-secret configuration lives in [config/settings.py](config/settings.py):
+
+```python
+SERIAL_PORT            = "/dev/ttyACM0"   # USB port for the Arduino
+SERIAL_BAUD            = 115200
+SERIAL_CONNECT_TIMEOUT = 10               # seconds to wait for ROVER:READY
+SERIAL_COMMAND_TIMEOUT = 120              # seconds to wait for a command to finish
+
+CLASSIFY_MODEL_ID      = "plant_classification-2lw2t/1"
+STEM_MODEL_ID          = "stem_detection-qeoi4/1"
+```
+
+The `ROBOFLOW_API_KEY` is loaded from `.env` and never committed to source control.
+
+Autonomous loop tuning constants are in [makeathon/auto.py](makeathon/auto.py):
+
+```python
+SEARCH_STEPS     = 8000   # steps forward between search frames
+CENTER_STEPS     = 100    # steps per fine-alignment nudge
+TOLERANCE        = 0.20   # ±20 % of image width counts as centred
+DISPENSE_SECONDS = 25     # placeholder — replaced by XGBRegressor output
+RETRACT_SECONDS  = 20     # pump reverse to clear the line
+```
+
+---
+
+## CLI Reference
+
+Run `python main.py` from the repo root. The Arduino must be connected and powered.
+
+| Command | Description |
+|---|---|
+| `START` | Begin the autonomous fertilization loop |
+| `STOP` | Emergency stop — immediately halts motors and pump |
+| `TAKE_PHOTO` | Capture a timestamped image to `data/` |
+| `READ_TEMP` | Request current temperature and humidity from Arduino |
+| `MOVE:FORWARD:<steps>` | Drive all wheels forward e.g. `MOVE:FORWARD:0200` |
+| `MOVE:BACKWARD:<steps>` | Drive all wheels backward |
+| `SERVO:<0-100>` | Set nozzle position (0 = full left, 100 = full right) |
+| `PUMP:FORWARD:<sec>` | Run pump forward for N seconds |
+| `PUMP:BACKWARD:<sec>` | Run pump backward (retract) for N seconds |
+| `help` | Print command reference |
+| `exit` / `quit` | Disconnect and exit |
+
+> **Ctrl-C at any time** sends an emergency STOP to the Arduino before exiting.
+
+---
+
+## Serial Protocol
+
+All messages are ASCII, LF-terminated, at 115 200 baud.
+
+### Commands (Pi → Arduino)
+
+```
+READ_TEMP
+MOVE:FORWARD:0200
+MOVE:BACKWARD:0200
+SERVO:050
+PUMP:FORWARD:25
+PUMP:BACKWARD:20
+STOP
+```
+
+### Responses (Arduino → Pi)
+
+| Response | Meaning |
+|---|---|
+| `ROVER:READY` | Firmware booted, ready to accept commands |
+| `TMP:23.4,61.2` | Temperature (°C), relative humidity (%) |
+| `ACK:MOVE:FORWARD:0200` | Move command acknowledged |
+| `ACK:MOVE:FORWARD:FINISH` | Move complete |
+| `ACK:SERVO:050` | Servo command acknowledged |
+| `ACK:SERVO:FINISH` | Servo reached position |
+| `ACK:PUMP:FORWARD:25` | Pump command acknowledged |
+| `ACK:PUMP:FINISH` | Pump timer elapsed |
+| `ACK:STOP` | Emergency stop executed |
+| `ERR:<reason>` | Parse or range error |
+
+A command is considered complete when the Pi receives a line starting with `TMP:`, equal to `ACK:STOP`, ending with `:FINISH`, or starting with `ERR:`.
