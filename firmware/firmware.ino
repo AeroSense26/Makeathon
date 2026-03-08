@@ -26,9 +26,9 @@
  *   On parse failure:     ERR:<reason>
  *
  * ── Required Arduino libraries ───────────────────────────────────────────────
- *   • AccelStepper       (Mike McCauley)  — Library Manager
- *   • Adafruit SHT4x     (Adafruit)       — Library Manager
- *   • Adafruit BusIO     (Adafruit)       — Library Manager (SHT4x dependency)
+ *   None beyond the Arduino IDE built-ins (Wire.h, Servo.h).
+ *   AccelStepper and Adafruit SHT4x have been replaced with zero-dependency
+ *   implementations inside actuators.h and sensors.h respectively.
  *
  * @author  Rover Firmware Team
  * @date    2026-03-08
