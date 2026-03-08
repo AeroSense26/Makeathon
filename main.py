@@ -31,7 +31,9 @@ def main() -> None:
 
     try:
         arduino.connect(connect_timeout=SERIAL_CONNECT_TIMEOUT)
-        print("Connected.\n")
+        print("Connected.")
+        arduino.send("SERVO:100")
+        print("Servo homed.\n")
         CLI(arduino).run()
     except ArduinoError as exc:
         print(f"Fatal: {exc}", file=sys.stderr)
