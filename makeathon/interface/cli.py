@@ -65,7 +65,11 @@ class CLI:
             try:
                 raw = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
-                print("\nExiting.")
+                print("\nEmergency stop.")
+                try:
+                    self._arduino.send("STOP")
+                except ArduinoError:
+                    pass
                 break
 
             if not raw:

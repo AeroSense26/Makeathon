@@ -242,7 +242,7 @@ void setup() {
     TCCR1A = _BV(COM1A1) | _BV(WGM11);
     TCCR1B = _BV(WGM13)  | _BV(WGM12) | _BV(CS11);
     ICR1   = 39999U;
-    servoSet(0);  // home position
+    servoSet(100);  // home position
 
     // Pump
     pinMode(PUMP_IN1, OUTPUT);
