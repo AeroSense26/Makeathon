@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Secrets — never commit
+.env
+
+# Photos captured by the rover
+data/*
+!data/.gitkeep
+
+# Arduino IDE build output
+firmware/build/
+firmware/.arduino15/

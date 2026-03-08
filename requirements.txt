@@ -1,3 +1,4 @@
 pyserial>=3.5
 picamera2
-inference
+inference-sdk
+python-dotenv
