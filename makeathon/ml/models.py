@@ -6,6 +6,7 @@ Two models:
     StemDetector — object detection for plant stems
 
 Both share a single InferenceHTTPClient and call the Roboflow serverless API.
+API key is read from the ROBOFLOW_API_KEY environment variable (set in .env).
 
 Usage:
     from makeathon.ml.models import Classifier, StemDetector
@@ -16,9 +17,13 @@ Usage:
     result = clf.predict("data/2026_03_08_12_00_00.jpg")
     # {'class': 'weed', 'confidence': 0.91}
 
-    detections = stems.predict("data/2026_03_08_12_00_00.jpg")
-    # [{'x': 320, 'y': 240, 'width': 40, 'height': 80,
-    #   'class': 'stem', 'confidence': 0.87}, ...]
+    result = stems.predict("data/2026_03_08_12_00_00.jpg")
+    # {
+    #   'detections':   [{'x': 320, 'y': 240, 'width': 40, 'height': 80,
+    #                     'class': 'stem', 'confidence': 0.87}],
+    #   'image_width':  640,
+    #   'image_height': 480,
+    # }
 """
 
 from config.settings import ROBOFLOW_API_KEY, CLASSIFY_MODEL_ID, STEM_MODEL_ID
@@ -62,17 +67,20 @@ class Classifier:
 class StemDetector:
     """Wraps the Roboflow stem detection model."""
 
-    def predict(self, image_path: str) -> list:
+    def predict(self, image_path: str) -> dict:
         """
         Detect stems in an image.
 
         Returns:
-            List of dicts with keys: x, y, width, height, class, confidence.
-            Empty list if no stems found.
+            {
+                'detections':   list of {'x', 'y', 'width', 'height', 'class', 'confidence'},
+                'image_width':  int,
+                'image_height': int,
+            }
         """
         try:
             result = _client().infer(image_path, model_id=STEM_MODEL_ID)
-            return [
+            detections = [
                 {
                     "x":          p["x"],
                     "y":          p["y"],
@@ -83,6 +91,12 @@ class StemDetector:
                 }
                 for p in result.get("predictions", [])
             ]
+            image = result.get("image", {})
+            return {
+                "detections":   detections,
+                "image_width":  image.get("width",  640),
+                "image_height": image.get("height", 480),
+            }
         except ModelError:
             raise
         except Exception as exc:

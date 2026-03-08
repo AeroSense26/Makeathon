@@ -3,7 +3,7 @@ Interactive command-line interface for the rover.
 
 Accepts the same command syntax used by the Arduino firmware, so what you
 type is exactly what gets sent over serial.  Responses are printed as
-received.  TAKE_PHOTO is handled locally on the Pi.
+received.  TAKE_PHOTO and START are handled locally on the Pi.
 
 Supported commands:
     READ_TEMP
@@ -14,13 +14,14 @@ Supported commands:
     PUMP:BACKWARD:<seconds>
     STOP
     TAKE_PHOTO               focus then capture a timestamped JPEG to data/
+    START                    autonomous stem search and centering loop
     exit / quit              leave the CLI
 """
 
 from makeathon.hardware.arduino import ArduinoConnection, ArduinoError
 from makeathon.hardware.camera import Camera, CameraError
 
-_EXACT_COMMANDS = {"READ_TEMP", "STOP", "TAKE_PHOTO"}
+_EXACT_COMMANDS = {"READ_TEMP", "STOP", "TAKE_PHOTO", "START"}
 _PREFIX_COMMANDS = ("MOVE:", "SERVO:", "PUMP:")
 
 _HELP = (
@@ -31,6 +32,7 @@ _HELP = (
     "  PUMP:FORWARD:<sec>     |  PUMP:BACKWARD:<sec>\n"
     "  STOP\n"
     "  TAKE_PHOTO\n"
+    "  START                      autonomous stem search + centering\n"
     "  help  |  exit"
 )
 
@@ -51,7 +53,7 @@ class CLI:
             print("Camera ready.")
         except CameraError as exc:
             print(f"Warning: camera unavailable — {exc}")
-            print("TAKE_PHOTO will not work this session.")
+            print("TAKE_PHOTO and START will not work this session.")
 
         print("Rover ready.  Type 'help' for commands.\n")
 
@@ -95,6 +97,18 @@ class CLI:
                     print(f"Saved: {path}")
                 except CameraError as exc:
                     print(f"Camera error: {exc}")
+                continue
+
+            if cmd == "START":
+                try:
+                    from makeathon.auto import run
+                    run(self._arduino, self._camera)
+                except KeyboardInterrupt:
+                    print("\nAuto mode aborted.")
+                    try:
+                        self._arduino.send("STOP")
+                    except ArduinoError:
+                        pass
                 continue
 
             try:
